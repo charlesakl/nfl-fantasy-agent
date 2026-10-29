@@ -1,0 +1,66 @@
+name: NFL Fantasy Daily Email
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Choose connectivity test or full report"
+        required: true
+        default: "test"
+        type: choice
+        options: [test, report]
+  schedule:
+    # Both UTC offsets; runtime checks America/New_York hour to handle DST.
+    - cron: "0 10 * * *"
+    - cron: "0 11 * * *"
+permissions:
+  contents: read
+concurrency:
+  group: nfl-fantasy-daily-email
+  cancel-in-progress: false
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Determine whether scheduled run is at 6 AM Eastern
+        id: clock
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          is_scheduled=os.environ['EVENT_NAME']=='schedule'
+          allowed=(not is_scheduled) or datetime.now(ZoneInfo('America/New_York')).hour==6
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write(f'allowed={str(allowed).lower()}\n')
+          print('Proceed:',allowed)
+          PY
+      - name: Send email
+        if: steps.clock.outputs.allowed == 'true'
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          BREVO_SENDER_EMAIL: ${{ secrets.BREVO_SENDER_EMAIL }}
+          BREVO_SENDER_NAME: ${{ secrets.BREVO_SENDER_NAME }}
+          REPORT_RECIPIENT_EMAILS: ${{ secrets.REPORT_RECIPIENT_EMAILS }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$MODE" = "test" ]; then
+            python daily_email.py --test --send
+          else
+            python daily_email.py --send
+          fi
+      - name: Upload generated report
+        if: steps.clock.outputs.allowed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfl-fantasy-report
+          path: data/latest_report.html
+          if-no-files-found: ignore
